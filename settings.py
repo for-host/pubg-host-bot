@@ -17,6 +17,8 @@ from common import (
     rich,
     validate_template,
     vars_help,
+    edit_or_send,
+    ibtn,
 )
 
 router = Router()
@@ -55,8 +57,9 @@ def settings_view(uid: int):
     )
     rows = [
         [
-            InlineKeyboardButton(
-                text=("✓ " if s["shift"] == n else "") + f"+{n}",
+            ibtn(
+                ("✓ " if s["shift"] == n else "") + f"+{n}",
+                "success" if s["shift"] == n else "primary",
                 callback_data=f"st:shift:{n}",
             )
             for n in SHIFT_QUICK
@@ -118,17 +121,14 @@ def prompt_for(field: str, uid: int) -> str:
 def edit_kb(field: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Standartga qaytarish", callback_data=f"st:reset:{field}")],
-            [InlineKeyboardButton(text="Bekor qilish", callback_data="st:cancel")],
+            [ibtn("Standartga qaytarish", "primary", callback_data=f"st:reset:{field}")],
+            [ibtn("Bekor qilish", "danger", callback_data="st:cancel")],
         ]
     )
 
 
 async def safe_edit(cb: CallbackQuery, text: str, kb=None) -> None:
-    try:
-        await cb.message.edit_text(text, reply_markup=kb)
-    except TelegramBadRequest:
-        pass  # "message is not modified" va shunga o'xshash holatlar
+    await edit_or_send(cb, text, kb)
 
 
 # ---------- kirish ----------

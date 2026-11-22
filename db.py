@@ -83,6 +83,7 @@ def init() -> None:
         conn.execute("ALTER TABLE users ADD COLUMN session TEXT NOT NULL DEFAULT ''")
     if "autosend" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN autosend INTEGER NOT NULL DEFAULT 0")
+    conn.execute("DELETE FROM share_posts WHERE created < datetime('now', '-30 day')")
     conn.commit()
 
 

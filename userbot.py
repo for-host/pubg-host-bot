@@ -22,7 +22,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import db
-from common import NOT_SPECIAL, HostOnly
+from common import NOT_SPECIAL, HostOnly, edit_or_send
 
 try:
     from telethon import TelegramClient, errors, utils
@@ -338,10 +338,7 @@ def picker_view(uid: int, page: int):
 
 
 async def safe_edit(cb: CallbackQuery, text: str, markup=None) -> None:
-    try:
-        await cb.message.edit_text(text, reply_markup=markup)
-    except TelegramBadRequest:
-        pass
+    await edit_or_send(cb, text, markup)
 
 
 async def _delete_quietly(message: Message) -> None:

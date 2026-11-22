@@ -25,6 +25,7 @@ from common import (
     is_super,
     main_kb,
     rich,
+    edit_or_send,
 )
 
 router = Router()
@@ -101,10 +102,7 @@ async def notify(bot: Bot, uid: int, text: str) -> bool:
 
 
 async def safe_edit(cb: CallbackQuery, text: str, markup=None) -> None:
-    try:
-        await cb.message.edit_text(text, reply_markup=markup)
-    except TelegramBadRequest:
-        pass
+    await edit_or_send(cb, text, markup)
 
 
 # ---------- rollarni o'zgartirish (panel va buyruqlar uchun umumiy) ----------

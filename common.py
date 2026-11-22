@@ -5,8 +5,13 @@ from html import escape, unescape
 from zoneinfo import ZoneInfo
 
 from aiogram import F
+import logging
+
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Filter
 from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
@@ -177,3 +182,33 @@ def rich(message: Message) -> str:
     if message.entities:
         return message.html_text
     return message.text or ""
+
+
+
+def ibtn(text: str, style: str | None = None, **kw) -> InlineKeyboardButton:
+    """Inline tugma. style: 'success' (yashil), 'primary' (ko'k), 'danger' (qizil)."""
+    if style:
+        kw["style"] = style
+    return InlineKeyboardButton(text=text, **kw)
+
+
+async def edit_or_send(cb: CallbackQuery, text: str, markup=None) -> None:
+    """Tugma bosilgan xabarni tahrirlaydi. Xabar obyekti kelmasa (cb.message=None)
+    yoki tahrirlab bo'lmasa, xato bermay yangi xabar yuboradi."""
+    msg = cb.message
+    try:
+        if msg is not None and hasattr(msg, "edit_text"):
+            await msg.edit_text(text, reply_markup=markup)
+            return
+        if cb.inline_message_id:
+            await cb.bot.edit_message_text(
+                text, inline_message_id=cb.inline_message_id, reply_markup=markup
+            )
+            return
+    except TelegramBadRequest as e:
+        if "not modified" in str(e).lower():
+            return
+    try:
+        await cb.bot.send_message(cb.from_user.id, text, reply_markup=markup)
+    except TelegramAPIError:
+        logging.exception("edit_or_send: xabarni yuborib bo'lmadi")

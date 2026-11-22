@@ -16,6 +16,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
+    ErrorEvent,
     CopyTextButton,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -41,6 +42,8 @@ from common import (
     DEFAULT_TEXTS,
     NOT_SPECIAL,
     TZ,
+    edit_or_send,
+    ibtn,
     flow_kb,
     is_host,
     main_kb,
@@ -64,18 +67,17 @@ def _btn(styled: bool, style: str, **kw) -> InlineKeyboardButton:
     return InlineKeyboardButton(**kw)
 
 
-def build_kb(uid: int, lobby_id: str, share_key: str, styled: bool = True) -> InlineKeyboardMarkup:
+def build_kb(uid: int, lobby_id: str, share_key: str, styled: bool = True,
+             share: bool = True) -> InlineKeyboardMarkup:
     username = db.get_username(uid)
     contact_url = f"https://t.me/{username}" if username else f"tg://user?id={uid}"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [_btn(styled, "success", text="🟢 Lobby ID ni nusxalash",
-                  copy_text=CopyTextButton(text=lobby_id))],
-            [_btn(styled, "primary", text="🔵 Postni ulashish",
-                  switch_inline_query=share_key)],
-            [_btn(styled, "danger", text="📞 Host bilan bog'lanish", url=contact_url)],
-        ]
-    )
+    rows = [[_btn(styled, "success", text="🟢 Lobby ID ni nusxalash",
+                  copy_text=CopyTextButton(text=lobby_id))]]
+    if share:
+        rows.append([_btn(styled, "primary", text="🔵 Postni ulashish",
+                          switch_inline_query=share_key)])
+    rows.append([_btn(styled, "danger", text="📞 Host bilan bog'lanish", url=contact_url)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def new_share(uid: int, lobby_id: str, html_text: str) -> str:
@@ -109,7 +111,7 @@ async def share_post_inline(query: InlineQuery):
         await query.answer([result], cache_time=0, is_personal=True)
     except TelegramBadRequest:
         logging.exception("Rangli tugmali inline natija qabul qilinmadi; oddiy tugmalarga o'tildi")
-        result.reply_markup = build_kb(uid, lobby_id, key, styled=False)
+        result = result.model_copy(update={"reply_markup": build_kb(uid, lobby_id, key, styled=False, share=False)})
         await query.answer([result], cache_time=0, is_personal=True)
 
 
@@ -214,9 +216,9 @@ async def create_start(message: Message, state: FSMContext):
     await state.clear()
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔴 3 ta karta", callback_data="cnt:3")],
-            [InlineKeyboardButton(text="🔵 4 ta karta", callback_data="cnt:4")],
-            [InlineKeyboardButton(text="🟢 5 ta karta (final)", callback_data="cnt:5")],
+            [ibtn("🔴 3 ta karta", "danger", callback_data="cnt:3")],
+            [ibtn("🔵 4 ta karta", "primary", callback_data="cnt:4")],
+            [ibtn("🟢 5 ta karta (final)", "success", callback_data="cnt:5")],
         ]
     )
     await message.answer("Nechta karta o'ynaladi?", reply_markup=kb)
@@ -234,8 +236,8 @@ async def choose_count(cb: CallbackQuery, state: FSMContext):
     maps = db.get_settings(cb.from_user.id)["maps"]
     await state.set_state(PostFlow.waiting_id)
     await state.update_data(count=count, idx=0, maps=maps)
-    await cb.message.edit_text(f"Karta soni: {count}")
-    await cb.message.answer(ask_text(0, count, maps), reply_markup=flow_kb())
+    await edit_or_send(cb, f"Karta soni: {count}")
+    await cb.bot.send_message(cb.from_user.id, ask_text(0, count, maps), reply_markup=flow_kb())
     await cb.answer()
 
 
@@ -317,6 +319,21 @@ async def flow_got_id(message: Message, state: FSMContext, bot: Bot):
         await message.answer(ask_text(idx, count, maps))
 
 
+# ---------- xatolarni ushlash ----------
+
+async def on_error(event: ErrorEvent) -> bool:
+    logging.error("Handler xatosi", exc_info=event.exception)
+    upd = event.update
+    try:
+        if upd.callback_query:
+            await upd.callback_query.answer("Xatolik yuz berdi. Qayta urinib ko'ring.", show_alert=True)
+        elif upd.message:
+            await upd.message.answer("Xatolik yuz berdi. Qayta urinib ko'ring.")
+    except Exception:
+        pass
+    return True
+
+
 # ---------- ishga tushirish ----------
 
 async def health(request):
@@ -334,6 +351,7 @@ async def main():
 
     bot = Bot(token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
+    dp.errors.register(on_error)
     # Tartib muhim: avval menyu va post oqimi, keyin sozlamalar va admin panel
     dp.include_router(router)
     dp.include_router(settings.router)
