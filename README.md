@@ -65,3 +65,16 @@ Host Telegram ID sini @userinfobot orqali bilish mumkin. Host avval botga /start
 - `admin.py`: admin panel
 - `common.py`: umumiy sozlamalar, tugma matnlari, post qolipi
 - `db.py`: SQLite baza
+
+
+## Render Web Service
+
+- Build Command: `pip install -r requirements.txt`
+- Start Command: `python bot.py`
+- Root Directory: bo'sh
+- Health Check Path: `/health`
+- Environment Variables: `BOT_TOKEN`, `ADMIN_IDS`, `TZ_NAME`, `API_ID`, `API_HASH`, `SESSION_KEY`.
+
+`SESSION_KEY` uchun Fernet kaliti kerak. Uni bir marta lokal tarzda `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` buyrug'i bilan yarating va Render Environment Variables ichida saqlang. Kalitni hech kimga yubormang.
+
+DIQQAT: Render Free disk doimiy emas. Ushbu loyihadagi SQLite `bot.db` va lokal saqlangan host sessiyalari deploy/restart paytida yo'qolishi mumkin. Doimiy foydalanishdan oldin DB va Telethon sessiyalarini persistent storage/managed database bilan moslashtirish kerak. Health endpoint Render tekshiruvi uchun; uptime kafolati bermaydi.

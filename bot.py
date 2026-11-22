@@ -12,6 +12,8 @@ from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiohttp import web
+
 from aiogram.types import (
     CallbackQuery,
     CopyTextButton,
@@ -266,10 +268,26 @@ async def main():
     dp.include_router(settings.router)
     dp.include_router(userbot.router)
     dp.include_router(admin.router)
+    # Render Web Service uchun HTTP health-check serveri.
+    # Bot polling va HTTP server bitta asyncio event loop ichida ishlaydi.
+    async def health(_request):
+        return web.json_response({"status": "ok", "service": "pubg-host-bot"})
+
+    app = web.Application()
+    app.router.add_get("/health", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", "10000"))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info("Health server ishga tushdi: port=%s", port)
+
     try:
         await dp.start_polling(bot)
     finally:
+        await runner.cleanup()
         await userbot.shutdown()
+        await bot.session.close()
 
 
 if __name__ == "__main__":
