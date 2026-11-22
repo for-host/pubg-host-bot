@@ -144,12 +144,18 @@ def validate_template(t: str):
 
 def render_post(s: dict, n: int, map_: str, lobby_id: str, start: str) -> str:
     try:
-        return s["template"].format(
+        template = s["template"]
+        # Lobby ID doim monospace bo'lsin. Agar host qolipda <code>{id}</code>
+        # deb yozgan bo'lsa, tegni takrorlamaymiz.
+        id_value = escape(lobby_id)
+        if not re.search(r"<\s*code\s*>\s*\{id\}\s*<\s*/\s*code\s*>", template, re.I):
+            id_value = f"<code>{id_value}</code>"
+        return template.format(
             n=n,
             map=escape(map_),
-            id=escape(lobby_id),
+            id=id_value,
             pw=escape(f"{s['prefix']}{n}"),
-            time=start,
+            time=escape(start),
             contact=escape(s["contact"]),
             note=escape(s["note"]),
         )

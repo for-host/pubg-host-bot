@@ -8,11 +8,11 @@ conn.row_factory = sqlite3.Row
 DEFAULT_NOTE = "Har ehtimolga qarshi screenshot olib qo‘ying !"
 DEFAULT_TEMPLATE = (
     "<b>Match {n} - {map}</b>\n"
-    "ID: {id}\n"
+    "ID: <code>{id}</code>\n"
     "P: {pw}\n"
     "Start time: {time}\n"
     "Kik va zaddeshka uchun: {contact}\n"
-    "<blockquote>{note}</blockquote>"
+    "<blockquote><i>{note}</i></blockquote>"
 )
 DEFAULT_SHIFT = 4
 DEFAULT_PREFIX = "g"
@@ -50,6 +50,13 @@ def init() -> None:
             user_id INTEGER,
             map TEXT,
             lobby_id TEXT,
+            created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS share_posts(
+            share_key TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            lobby_id TEXT NOT NULL,
+            html_text TEXT NOT NULL,
             created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS channels(
@@ -310,3 +317,17 @@ def stats(today_utc: str, week_utc: str) -> dict:
             (week_utc,),
         ).fetchall(),
     }
+
+
+def save_share(share_key: str, uid: int, lobby_id: str, html_text: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO share_posts(share_key, user_id, lobby_id, html_text) VALUES(?, ?, ?, ?)",
+        (share_key, uid, lobby_id, html_text),
+    )
+    conn.commit()
+
+def get_share(share_key: str):
+    return conn.execute(
+        "SELECT user_id, lobby_id, html_text FROM share_posts WHERE share_key=?",
+        (share_key,),
+    ).fetchone()

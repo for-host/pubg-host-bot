@@ -4,16 +4,16 @@ import logging
 import os
 import re
 from datetime import timedelta
-from urllib.parse import quote
+from uuid import uuid4
 
 from aiogram import Bot, Dispatcher, F, Router
+from aiohttp import web
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiohttp import web
-
 from aiogram.types import (
     CallbackQuery,
     CopyTextButton,
@@ -21,6 +21,9 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     LinkPreviewOptions,
     Message,
+    InlineQuery,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
 )
 
 import admin
@@ -54,22 +57,60 @@ class PostFlow(StatesGroup):
 
 # ---------- yordamchilar ----------
 
-def post_kb(uid: int, lobby_id: str, html_text: str) -> InlineKeyboardMarkup:
+def _btn(styled: bool, style: str, **kw) -> InlineKeyboardButton:
+    """Rangli tugma (Bot API 9.4+): success=yashil, primary=ko'k, danger=qizil."""
+    if styled:
+        kw["style"] = style
+    return InlineKeyboardButton(**kw)
+
+
+def build_kb(uid: int, lobby_id: str, share_key: str, styled: bool = True) -> InlineKeyboardMarkup:
     username = db.get_username(uid)
     contact_url = f"https://t.me/{username}" if username else f"tg://user?id={uid}"
-    share_url = "https://t.me/share/url?url=%20&text=" + quote(plain(html_text))
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🟢 Lobby ID ni nusxalash",
-                    copy_text=CopyTextButton(text=lobby_id),
-                )
-            ],
-            [InlineKeyboardButton(text="🔵 Postni ulashish", url=share_url)],
-            [InlineKeyboardButton(text="📞 Host bilan bog'lanish", url=contact_url)],
+            [_btn(styled, "success", text="🟢 Lobby ID ni nusxalash",
+                  copy_text=CopyTextButton(text=lobby_id))],
+            [_btn(styled, "primary", text="🔵 Postni ulashish",
+                  switch_inline_query=share_key)],
+            [_btn(styled, "danger", text="📞 Host bilan bog'lanish", url=contact_url)],
         ]
     )
+
+
+def new_share(uid: int, lobby_id: str, html_text: str) -> str:
+    key = uuid4().hex[:16]
+    db.save_share(key, uid, lobby_id, html_text)
+    return key
+
+
+@router.inline_query()
+async def share_post_inline(query: InlineQuery):
+    """'Postni ulashish' bosilganda: guruh/chat tanlanadi va post xuddi shu ko'rinishda,
+    tugmalari bilan yuboriladi (tugmalar orasida yana 'Postni ulashish' ham bor)."""
+    key = (query.query or "").strip()
+    row = db.get_share(key) if key else None
+    if not row:
+        await query.answer([], cache_time=0, is_personal=True)
+        return
+    uid, lobby_id, html_text = row["user_id"], row["lobby_id"], row["html_text"]
+    result = InlineQueryResultArticle(
+        id=key,
+        title="PUBG lobby postini ulashish",
+        description="Post matni va tugmalari bilan yuboriladi",
+        input_message_content=InputTextMessageContent(
+            message_text=html_text,
+            parse_mode=ParseMode.HTML,
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+        ),
+        reply_markup=build_kb(uid, lobby_id, key, styled=True),
+    )
+    try:
+        await query.answer([result], cache_time=0, is_personal=True)
+    except TelegramBadRequest:
+        logging.exception("Rangli tugmali inline natija qabul qilinmadi; oddiy tugmalarga o'tildi")
+        result.reply_markup = build_kb(uid, lobby_id, key, styled=False)
+        await query.answer([result], cache_time=0, is_personal=True)
 
 
 def _ocr_sync(data: bytes):
@@ -225,7 +266,15 @@ async def flow_got_id(message: Message, state: FSMContext, bot: Bot):
         return
 
     data = await state.get_data()
+    if not data or not all(k in data for k in ("idx", "count", "maps")):
+        await state.clear()
+        await message.answer("Post yaratish sessiyasi uzilib qoldi. 'Post yaratish'ni qayta bosing.")
+        return
     idx, count, maps = data["idx"], data["count"], data["maps"]
+    if not isinstance(maps, list) or not (0 <= idx < count) or idx >= len(maps):
+        await state.clear()
+        await message.answer("Karta sozlamasida xatolik bor. Sozlamalardan 5 ta kartani tekshiring.")
+        return
     s = db.get_settings(u.id)
 
     # Start time = ID yuborilgan vaqt + host belgilagan daqiqa (standart +4)
@@ -233,13 +282,31 @@ async def flow_got_id(message: Message, state: FSMContext, bot: Bot):
     start = (sent + timedelta(minutes=s["shift"])).strftime("%H:%M")
 
     html_text = render_post(s, idx + 1, maps[idx], lobby_id, start)
-    await message.answer(
-        html_text,
-        reply_markup=post_kb(u.id, lobby_id, html_text),
-        link_preview_options=LinkPreviewOptions(is_disabled=True),
-    )
+    share_key = new_share(u.id, lobby_id, html_text)
+    try:
+        await message.answer(
+            html_text,
+            reply_markup=build_kb(u.id, lobby_id, share_key, styled=True),
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+        )
+    except TelegramBadRequest:
+        # Rangli tugma qabul qilinmasa, tugmalar rangsiz bo'lsa ham post yo'qolmasin
+        logging.exception("Rangli tugmalarni yuborib bo'lmadi; oddiy tugmalarga o'tildi")
+        await message.answer(
+            html_text,
+            reply_markup=build_kb(u.id, lobby_id, share_key, styled=False),
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+        )
+    except TelegramAPIError:
+        logging.exception("Post yuborishda Telegram API xatosi")
+        await message.answer("Postni yuborib bo'lmadi. Bot logidagi xatoni tekshirish kerak.")
+        return
+
     db.add_post(u.id, maps[idx], lobby_id)
-    userbot.schedule_send(bot, u.id, html_text)  # akkaunt ulangan va avto yuborish yoqilgan bo'lsa
+    try:
+        userbot.schedule_send(bot, u.id, html_text)  # akkaunt ulangan va avto yuborish yoqilgan bo'lsa
+    except Exception:
+        logging.exception("Avto yuborishni rejalashda xato")
 
     idx += 1
     if idx >= count:
@@ -252,11 +319,15 @@ async def flow_got_id(message: Message, state: FSMContext, bot: Bot):
 
 # ---------- ishga tushirish ----------
 
+async def health(request):
+    return web.json_response({"ok": True, "service": "pubg-host-bot"})
+
+
 async def main():
     logging.basicConfig(level=logging.INFO)
     token = os.getenv("BOT_TOKEN")
     if not token:
-        raise SystemExit("BOT_TOKEN topilmadi. .env faylga yozing.")
+        raise SystemExit("BOT_TOKEN topilmadi. Render Environment yoki .env ga kiriting.")
     db.init()
     for aid in ADMIN_IDS:
         db.set_role(aid, "admin")
@@ -268,26 +339,23 @@ async def main():
     dp.include_router(settings.router)
     dp.include_router(userbot.router)
     dp.include_router(admin.router)
-    # Render Web Service uchun HTTP health-check serveri.
-    # Bot polling va HTTP server bitta asyncio event loop ichida ishlaydi.
-    async def health(_request):
-        return web.json_response({"status": "ok", "service": "pubg-host-bot"})
 
+    # Render Web Service uchun HTTP health endpoint.
     app = web.Application()
+    app.router.add_get("/", health)
     app.router.add_get("/health", health)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", "10000"))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logging.info("Health server ishga tushdi: port=%s", port)
+    logging.info("Health server 0.0.0.0:%s da ishga tushdi", port)
 
     try:
         await dp.start_polling(bot)
     finally:
-        await runner.cleanup()
         await userbot.shutdown()
-        await bot.session.close()
+        await runner.cleanup()
 
 
 if __name__ == "__main__":
