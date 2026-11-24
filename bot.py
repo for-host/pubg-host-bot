@@ -338,7 +338,12 @@ async def flow_got_id(message: Message, state: FSMContext, bot: Bot):
 # ---------- jamoalar ro'yxati (slot postidan faqat jamoa nomlari) ----------
 
 SLOT_RE = re.compile(r"^[^\w\n]*(\d{1,2})(?!\d)[\ufe0f\u20e3]*\s*[-–—.):]*\s*(.*)$")
-EMOJI_EDGE = re.compile(r"^[\W_]+|[\s/|\-–—:,;•\U0001F000-\U0001FFFF\u2600-\u27BF\u2B00-\u2BFF\ufe0f\u200d]+$")
+EMOJI_ANY = re.compile(
+    "[\U0001F000-\U0001FFFF\u2190-\u21FF\u2300-\u23FF\u2460-\u24FF\u25A0-\u27BF"
+    "\u2900-\u297F\u2B00-\u2BFF\u3030\u303D\u00A9\u00AE\u203C\u2049\u2122\u2139"
+    "\ufe0f\u200d\u20e3]"
+)
+EDGE_JUNK = re.compile(r"^[\W_]+|[\s\-–—:,;.•]+$")
 FIRST_SLOT = 3
 
 
@@ -354,9 +359,16 @@ def parse_teams(text: str):
         slot, rest = int(m.group(1)), m.group(2)
         if slot < FIRST_SLOT:
             continue
-        name = rest.split("@", 1)[0]
-        name = EMOJI_EDGE.sub("", name)
-        name = EMOJI_EDGE.sub("", name).strip()
+        rest = rest.split("@", 1)[0]  # @username tashlanadi
+        rest = EMOJI_ANY.sub("", rest)  # emoji va stikerlar tashlanadi
+        # "NOM / TEG" yoki "NOM | TEG": faqat birinchi qism (to'liq jamoa nomi) olinadi
+        name = ""
+        for part in re.split(r"[/|]", rest):
+            part = EDGE_JUNK.sub("", EDGE_JUNK.sub("", part))
+            part = re.sub(r"\s+", " ", part).strip()
+            if part:
+                name = part
+                break
         if name:
             teams.append(name)
     return lines, teams

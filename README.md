@@ -13,6 +13,8 @@
      orqali bir marta olinadi, bitta juft hamma hostlarga yetadi. Bo'sh qolsa, akkaunt ulash o'chiq bo'ladi.
 5. `python bot.py`
 
+**Muhim (tugmali ulashish uchun):** @BotFather > /mybots > botni tanlang > Bot Settings > Inline Mode > Turn on.
+
 Eski `bot.db` bo'lsa o'chirmang: yangi ustun va jadvallar o'zi qo'shiladi.
 
 ## Hostlar uchun
