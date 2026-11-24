@@ -3,8 +3,8 @@ import io
 import logging
 import os
 import re
+from html import escape
 from datetime import timedelta
-from uuid import uuid4
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiohttp import web
@@ -22,9 +22,6 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     LinkPreviewOptions,
     Message,
-    InlineQuery,
-    InlineQueryResultArticle,
-    InputTextMessageContent,
 )
 
 import admin
@@ -44,6 +41,7 @@ from common import (
     TZ,
     edit_or_send,
     ibtn,
+    HostOnly,
     flow_kb,
     is_host,
     main_kb,
@@ -67,52 +65,16 @@ def _btn(styled: bool, style: str, **kw) -> InlineKeyboardButton:
     return InlineKeyboardButton(**kw)
 
 
-def build_kb(uid: int, lobby_id: str, share_key: str, styled: bool = True,
-             share: bool = True) -> InlineKeyboardMarkup:
+def build_kb(uid: int, lobby_id: str, styled: bool = True) -> InlineKeyboardMarkup:
     username = db.get_username(uid)
     contact_url = f"https://t.me/{username}" if username else f"tg://user?id={uid}"
-    rows = [[_btn(styled, "success", text="🟢 Lobby ID ni nusxalash",
-                  copy_text=CopyTextButton(text=lobby_id))]]
-    if share:
-        rows.append([_btn(styled, "primary", text="🔵 Postni ulashish",
-                          switch_inline_query=share_key)])
-    rows.append([_btn(styled, "danger", text="📞 Host bilan bog'lanish", url=contact_url)])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def new_share(uid: int, lobby_id: str, html_text: str) -> str:
-    key = uuid4().hex[:16]
-    db.save_share(key, uid, lobby_id, html_text)
-    return key
-
-
-@router.inline_query()
-async def share_post_inline(query: InlineQuery):
-    """'Postni ulashish' bosilganda: guruh/chat tanlanadi va post xuddi shu ko'rinishda,
-    tugmalari bilan yuboriladi (tugmalar orasida yana 'Postni ulashish' ham bor)."""
-    key = (query.query or "").strip()
-    row = db.get_share(key) if key else None
-    if not row:
-        await query.answer([], cache_time=0, is_personal=True)
-        return
-    uid, lobby_id, html_text = row["user_id"], row["lobby_id"], row["html_text"]
-    result = InlineQueryResultArticle(
-        id=key,
-        title="PUBG lobby postini ulashish",
-        description="Post matni va tugmalari bilan yuboriladi",
-        input_message_content=InputTextMessageContent(
-            message_text=html_text,
-            parse_mode=ParseMode.HTML,
-            link_preview_options=LinkPreviewOptions(is_disabled=True),
-        ),
-        reply_markup=build_kb(uid, lobby_id, key, styled=True),
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn(styled, "success", text="🟢 Lobby ID ni nusxalash",
+                  copy_text=CopyTextButton(text=lobby_id))],
+            [_btn(styled, "danger", text="📞 Host bilan bog'lanish", url=contact_url)],
+        ]
     )
-    try:
-        await query.answer([result], cache_time=0, is_personal=True)
-    except TelegramBadRequest:
-        logging.exception("Rangli tugmali inline natija qabul qilinmadi; oddiy tugmalarga o'tildi")
-        result = result.model_copy(update={"reply_markup": build_kb(uid, lobby_id, key, styled=False, share=False)})
-        await query.answer([result], cache_time=0, is_personal=True)
 
 
 def _ocr_sync(data: bytes):
@@ -224,6 +186,26 @@ async def create_start(message: Message, state: FSMContext):
     await message.answer("Nechta karta o'ynaladi?", reply_markup=kb)
 
 
+def picker_kb(count: int, maps: list, done: list) -> InlineKeyboardMarkup:
+    rows = []
+    for i in range(count):
+        ok = i in done
+        rows.append([ibtn(
+            ("✅ " if ok else "") + f"{i + 1}-karta ({maps[i]})",
+            "success" if ok else "primary",
+            callback_data=f"pick:{i}",
+        )])
+    rows.append([ibtn("🏁 Tugatish", "danger", callback_data="pick:end")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def show_picker(bot: Bot, uid: int, state: FSMContext, text: str) -> None:
+    data = await state.get_data()
+    await bot.send_message(
+        uid, text, reply_markup=picker_kb(data["count"], data["maps"], data.get("done", []))
+    )
+
+
 @router.callback_query(F.data.startswith("cnt:"))
 async def choose_count(cb: CallbackQuery, state: FSMContext):
     if not is_host(cb.from_user.id):
@@ -235,9 +217,44 @@ async def choose_count(cb: CallbackQuery, state: FSMContext):
         return
     maps = db.get_settings(cb.from_user.id)["maps"]
     await state.set_state(PostFlow.waiting_id)
-    await state.update_data(count=count, idx=0, maps=maps)
+    await state.update_data(count=count, cur=None, done=[], maps=maps)
     await edit_or_send(cb, f"Karta soni: {count}")
-    await cb.bot.send_message(cb.from_user.id, ask_text(0, count, maps), reply_markup=flow_kb())
+    await cb.bot.send_message(
+        cb.from_user.id,
+        "Qaysi karta ID sini yuborasiz? Kartani tanlang:",
+        reply_markup=picker_kb(count, maps, []),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("pick:"))
+async def pick_card(cb: CallbackQuery, state: FSMContext):
+    uid = cb.from_user.id
+    if not is_host(uid):
+        await cb.answer()
+        return
+    data = await state.get_data()
+    arg = cb.data.split(":")[1]
+    if arg == "end":
+        await state.clear()
+        await cb.bot.send_message(uid, "Tugatildi.", reply_markup=main_kb(uid))
+        await cb.answer()
+        return
+    if not data or "count" not in data or not arg.isdigit() or int(arg) >= data["count"]:
+        await state.clear()
+        await cb.bot.send_message(
+            uid, "Sessiya uzilib qoldi. 'Post yaratish'ni qayta bosing.", reply_markup=main_kb(uid)
+        )
+        await cb.answer()
+        return
+    idx = int(arg)
+    await state.set_state(PostFlow.waiting_id)
+    await state.update_data(cur=idx)
+    await cb.bot.send_message(
+        uid,
+        f"{idx + 1}-karta ({data['maps'][idx]}).\nID ni matn yoki skrinshot qilib yuboring.",
+        reply_markup=flow_kb(),
+    )
     await cb.answer()
 
 
@@ -248,47 +265,45 @@ async def flow_cancel(message: Message, state: FSMContext):
 
 
 @router.message(PostFlow.waiting_id, F.text == BTN_REDO)
-async def flow_redo(message: Message, state: FSMContext):
+async def flow_redo(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
-    idx, count, maps = data["idx"], data["count"], data["maps"]
-    if idx == 0:
-        await message.answer("Hozir 1-kartadasiz.\n" + ask_text(0, count, maps))
+    if not data or "count" not in data:
+        await state.clear()
+        await message.answer("Sessiya uzilib qoldi. 'Post yaratish'ni qayta bosing.", reply_markup=main_kb(message.from_user.id))
         return
-    idx -= 1
-    await state.update_data(idx=idx)
-    await message.answer(ask_text(idx, count, maps))
+    await state.update_data(cur=None)
+    await show_picker(bot, message.from_user.id, state, "Kartani tanlang:")
 
 
 @router.message(PostFlow.waiting_id, F.photo | NOT_SPECIAL)
 async def flow_got_id(message: Message, state: FSMContext, bot: Bot):
     u = message.from_user
+    data = await state.get_data()
+    if not data or not all(k in data for k in ("count", "maps")):
+        await state.clear()
+        await message.answer("Post yaratish sessiyasi uzilib qoldi. 'Post yaratish'ni qayta bosing.")
+        return
+    idx, count, maps = data.get("cur"), data["count"], data["maps"]
+    if idx is None:
+        await show_picker(bot, u.id, state, "Avval kartani tanlang:")
+        return
     lobby_id, error = await extract_id(message, bot)
     if error:
         await message.answer(error)
         return
-
-    data = await state.get_data()
-    if not data or not all(k in data for k in ("idx", "count", "maps")):
-        await state.clear()
-        await message.answer("Post yaratish sessiyasi uzilib qoldi. 'Post yaratish'ni qayta bosing.")
-        return
-    idx, count, maps = data["idx"], data["count"], data["maps"]
     if not isinstance(maps, list) or not (0 <= idx < count) or idx >= len(maps):
         await state.clear()
         await message.answer("Karta sozlamasida xatolik bor. Sozlamalardan 5 ta kartani tekshiring.")
         return
     s = db.get_settings(u.id)
-
     # Start time = ID yuborilgan vaqt + host belgilagan daqiqa (standart +4)
     sent = message.date.astimezone(TZ)
     start = (sent + timedelta(minutes=s["shift"])).strftime("%H:%M")
-
     html_text = render_post(s, idx + 1, maps[idx], lobby_id, start)
-    share_key = new_share(u.id, lobby_id, html_text)
     try:
         await message.answer(
             html_text,
-            reply_markup=build_kb(u.id, lobby_id, share_key, styled=True),
+            reply_markup=build_kb(u.id, lobby_id, styled=True),
             link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
     except TelegramBadRequest:
@@ -296,27 +311,66 @@ async def flow_got_id(message: Message, state: FSMContext, bot: Bot):
         logging.exception("Rangli tugmalarni yuborib bo'lmadi; oddiy tugmalarga o'tildi")
         await message.answer(
             html_text,
-            reply_markup=build_kb(u.id, lobby_id, share_key, styled=False),
+            reply_markup=build_kb(u.id, lobby_id, styled=False),
             link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
     except TelegramAPIError:
         logging.exception("Post yuborishda Telegram API xatosi")
         await message.answer("Postni yuborib bo'lmadi. Bot logidagi xatoni tekshirish kerak.")
         return
-
     db.add_post(u.id, maps[idx], lobby_id)
     try:
         userbot.schedule_send(bot, u.id, html_text)  # akkaunt ulangan va avto yuborish yoqilgan bo'lsa
     except Exception:
         logging.exception("Avto yuborishni rejalashda xato")
+    done = list(data.get("done", []))
+    if idx not in done:
+        done.append(idx)
+    await state.update_data(cur=None, done=done)
+    text = (
+        "Hammasi tayyor. Xato bo'lsa kartani qayta tanlang yoki Tugatish bosing."
+        if len(done) >= count
+        else "Keyingi kartani tanlang:"
+    )
+    await show_picker(bot, u.id, state, text)
 
-    idx += 1
-    if idx >= count:
-        await state.clear()
-        await message.answer("Hammasi tayyor.", reply_markup=main_kb(u.id))
-    else:
-        await state.update_data(idx=idx)
-        await message.answer(ask_text(idx, count, maps))
+
+# ---------- jamoalar ro'yxati (slot postidan faqat jamoa nomlari) ----------
+
+SLOT_RE = re.compile(r"^[^\w\n]*(\d{1,2})(?!\d)[\ufe0f\u20e3]*\s*[-–—.):]*\s*(.*)$")
+EMOJI_EDGE = re.compile(r"^[\W_]+|[\s/|\-–—:,;•\U0001F000-\U0001FFFF\u2600-\u27BF\u2B00-\u2BFF\ufe0f\u200d]+$")
+FIRST_SLOT = 3
+
+
+def parse_teams(text: str):
+    """(slot qatorlari soni, [jamoa nomlari]) — {FIRST_SLOT}-slotdan boshlab, bo'sh slotlarsiz."""
+    lines = 0
+    teams = []
+    for raw in (text or "").splitlines():
+        m = SLOT_RE.match(raw.strip())
+        if not m:
+            continue
+        lines += 1
+        slot, rest = int(m.group(1)), m.group(2)
+        if slot < FIRST_SLOT:
+            continue
+        name = rest.split("@", 1)[0]
+        name = EMOJI_EDGE.sub("", name)
+        name = EMOJI_EDGE.sub("", name).strip()
+        if name:
+            teams.append(name)
+    return lines, teams
+
+
+def looks_like_slot_list(message: Message) -> bool:
+    lines, teams = parse_teams(message.text or message.caption or "")
+    return lines >= 3 and len(teams) >= 1
+
+
+@router.message(HostOnly(), (F.text | F.caption), looks_like_slot_list)
+async def team_list(message: Message):
+    _, teams = parse_teams(message.text or message.caption or "")
+    await message.answer("<pre>" + escape("\n".join(teams)) + "</pre>")
 
 
 # ---------- xatolarni ushlash ----------
